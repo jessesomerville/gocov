@@ -14,7 +14,6 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/alecthomas/chroma/quick"
 	"golang.org/x/tools/cover"
 )
 
@@ -56,12 +55,21 @@ func main() {
 	profiles, err := cover.ParseProfilesFromReader(rd)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
 	}
 
 	if err := displayCoverage(profiles); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
 	}
 }
+
+var (
+	red    = rgb(48, 26, 31)
+	green  = rgb(18, 38, 30)
+	yellow = rgb(204, 136, 26)
+	dark   = rgb(13, 17, 23)
+)
 
 func displayCoverage(profiles []*cover.Profile) error {
 	dirs, err := findPkgs(profiles)
@@ -78,43 +86,50 @@ func displayCoverage(profiles []*cover.Profile) error {
 		if err != nil {
 			return fmt.Errorf("can't read %q: %v", fn, err)
 		}
-		border := strings.Repeat("-", len(fn))
-		fmt.Printf("\n%s\n%s\n%s\n\n", border, fn, border)
+		fmt.Printf("\n%s\n", yellow.Fg([]byte(fn)))
 
-		b := new(strings.Builder)
-		quick.Highlight(b, string(src), "go", "terminal16", "base16-snazzy")
-		colorlines(string(src), b.String(), profile.Blocks)
+		colorlines(src, profile.Blocks)
 	}
 	return nil
 }
 
-const (
-	fg      = "\x1b[97m"
-	redbg   = "\x1b[48;2;64;4;8m"
-	greenbg = "\x1b[48;2;10;64;4m"
-	reset   = "\x1b[0m"
-)
-
-func colorlines(src, hlsrc string, blocks []cover.ProfileBlock) {
-	lines := strings.Split(src, "\n")
-	hllines := strings.Split(hlsrc, "\n")
-	outlines := make([]string, len(lines))
-	for _, b := range blocks {
-		c := redbg
-		if b.Count > 0 {
-			c = greenbg
-		}
-		for i := b.StartLine; i < b.EndLine-1; i++ {
-			outlines[i] = fmt.Sprintf("%s%s%s%s", c, fg, lines[i], reset)
-		}
-	}
-	for i := range outlines {
-		if outlines[i] != "" {
-			fmt.Println(outlines[i])
+func colorlines(src []byte, blocks []cover.ProfileBlock) {
+	// Replace tabs with two spaces.
+	src = bytes.ReplaceAll(src, []byte{9}, []byte("  "))
+	prevEnd := 0
+	var curr []byte
+	for _, block := range blocks {
+		curr, src = cutAfterIndexN(src, '\n', block.StartLine-prevEnd)
+		fmt.Printf("%s", curr) // Uninstrumented lines.
+		curr, src = cutAfterIndexN(src, '\n', block.EndLine-block.StartLine)
+		if block.Count == 0 {
+			fmt.Printf(red.Bg(curr))
 		} else {
-			fmt.Println(hllines[i])
+			fmt.Printf(green.Bg(curr))
 		}
+		prevEnd = block.EndLine
 	}
+	if len(src) != 0 {
+		fmt.Printf("%s%s\n", reset, src)
+	}
+}
+
+func cutAfterIndexN(s []byte, sep byte, n int) (before, after []byte) {
+	if n <= 0 {
+		return s, nil
+	}
+	i := 0
+	for i < len(s)-1 {
+		if s[i] == sep {
+			n--
+			if n == 0 {
+				break
+			}
+		}
+		i++
+	}
+	i++
+	return s[:i], s[i:]
 }
 
 // Pkg describes a single package, compatible with JSON output from 'go list'.
@@ -185,4 +200,26 @@ func findFile(pkgs map[string]*Pkg, file string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("did not find package for %s in go list output", file)
+}
+
+const reset = "\x1b[0m"
+
+type trueColor struct {
+	R, G, B uint8
+}
+
+func rgb(r, g, b uint8) trueColor {
+	return trueColor{r, g, b}
+}
+
+func (tc trueColor) String() string {
+	return fmt.Sprintf("rgb(%d, %d, %d)", tc.R, tc.G, tc.B)
+}
+
+func (tc trueColor) Bg(msg []byte) string {
+	return fmt.Sprintf("\x1b[48;2;%d;%d;%dm%s%s", tc.R, tc.G, tc.B, msg, reset)
+}
+
+func (tc trueColor) Fg(msg []byte) string {
+	return fmt.Sprintf("\x1b[38;2;%d;%d;%dm%s%s", tc.R, tc.G, tc.B, msg, reset)
 }
